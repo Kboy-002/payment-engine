@@ -1,0 +1,10 @@
+
+----- NEW TRANSACTION -----
+Username: Collins
+Transaction ID: TXN-20260220-153031-9428
+Date/Time: 20-02-2026  15:30:31
+chicken x10 - 37000
+bread x10 - 28000
+water x10 - 5000
+Total Amount: 70000
+---------------------
