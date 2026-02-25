@@ -104,3 +104,18 @@ def log_transaction(user_id, tx_type, amount, details=""):
 
     connection.commit()
     connection.close()
+
+def get_user_transactions(user_id):
+    connection = connect()
+    cursor = connection.cursor()
+
+    cursor.execute("""
+        SELECT type, amount, timestamp, details
+        FROM transactions
+        WHERE user_id = ?
+        ORDER BY id DESC
+    """, (user_id,))
+
+    transactions = cursor.fetchall()
+    connection.close()
+    return transactions

@@ -6,7 +6,8 @@ from db_operations import (
     update_balance,
     log_transaction,
     get_all_users,
-    get_all_transactions
+    get_all_transactions,
+    get_user_transactions
 )
 initialise_db()
 
@@ -18,7 +19,6 @@ def login():
 
     if user:
         print(f"Welcome back {name}!")
-        print(f"Your balance is ₦{user[2]}")
         return user
     else:
         print("Account not found. Creating new account...")
@@ -140,11 +140,53 @@ def shop(user):
         ledger.write(f"New Balance: ₦{new_balance}\n")
         ledger.write("------------------\n")
 
+def view_balance(user):
+    fresh_user = get_user(user[1])
+    print(f"\nCurrent Balance: ₦{fresh_user[2]}")
 
-user = login()
-fund_account(user)
-shop(user)
+def view_transactions(user):
+    transactions = get_user_transactions(user[0])
 
-for item in get_all_transactions():
-    print(item)
+    if not transactions:
+        print("\nNo transactions found.")
+        return
 
+    print("\n--- Transaction History ---")
+    for txn in transactions:
+        print(f"{txn[0].upper()} | ₦{txn[1]} | {txn[2]} | {txn[3]}")
+
+
+def menu(user):
+    while True:
+        print("""
+        ---- MAIN MENU ----
+        1. Fund Account
+        2. Shop
+        3. View Balance
+        4. View Transactions
+        5. Logout
+        """)
+
+        choice = input("Select an option: ")
+
+        if choice == "1":
+            fund_account(user)
+
+        elif choice == "2":
+            shop(user)
+
+        elif choice == "3":
+            view_balance(user)
+
+        elif choice == "4":
+            view_transactions(user)
+
+        elif choice == "5":
+            print("Logging out...")
+            break
+
+        else:
+            print("Invalid option. Try again.")
+while True:
+    current_user = login()
+    menu(current_user)
