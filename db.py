@@ -1,3 +1,4 @@
+from db_operations import connect
 import sqlite3
 from db_operations import (
     initialise_db,
@@ -29,132 +30,194 @@ def login():
 
 
 def fund_account(user):
+    import sqlite3
+    from db_operations import connect, log_transaction
+
     amount = float(input("Enter amount to fund: "))
 
     if amount <= 0:
         print("Invalid funding amount.")
         return
 
-    fresh_user = get_user(user[1])
+    connection = connect()
+    try:
+        cursor = connection.cursor()
 
-    current_balance = fresh_user[2]
-    new_balance = current_balance + amount
+        # Start a transaction
+        cursor.execute("BEGIN")
 
-    update_balance(user[1], new_balance)
+        # Fetch fresh balance
+        cursor.execute("SELECT balance FROM users WHERE id = ?", (user[0],))
+        current_balance = cursor.fetchone()[0]
 
-    # Log transaction
-    log_transaction(user[0], "credit", amount, "Account funding")
+        # Update balance
+        new_balance = current_balance + amount
+        cursor.execute("UPDATE users SET balance = ? WHERE id = ?", (new_balance, user[0]))
 
-    print(f"Funding successful. New balance: ₦{new_balance}")
+        # Log transaction
+        from datetime import datetime
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        cursor.execute("""
+            INSERT INTO transactions (user_id, type, amount, timestamp, details)
+            VALUES (?, ?, ?, ?, ?)
+        """, (user[0], "credit", amount, timestamp, "Account funding"))
 
+        # Commit transaction (everything succeeds together)
+        connection.commit()
+        print(f"Funding successful. New balance: ₦{new_balance}")
+
+    except sqlite3.Error as e:
+        # Rollback in case of any error (atomicity)
+        connection.rollback()
+        print("Funding failed, transaction rolled back.")
+        print("Error:", e)
+
+    finally:
+        connection.close()
 
 def shop(user):
     """
     Handles shopping, adding items to a cart, checking out,
-    updating user balance in DB, and logging transactions.
+    updating user balance in DB, reducing stock, and logging transactions atomically.
     """
-    # Example items — in a real app these could be in a DB table too
-    items = {
-        "bread": 2800,
-        "water": 500,
-        "butter": 800,
-        "juice": 1000,
-        "chicken": 3700
-    }
-
-    cart = {}
-    total_cost = 0
-
-    while True:
-        print("\nAvailable items:")
-        for name, price in items.items():
-            print(f"{name.capitalize()}: ₦{price}")
-
-        choice = input(
-            f"{user[1].capitalize()}, what would you like to buy? (type 'done' to checkout): ").lower()
-        if choice == "done":
-            break
-
-        if choice not in items:
-            print(f"Sorry, {choice} is not available.")
-            continue
-
-        quantity = int(input(f"How many {choice} would you like? "))
-        subtotal = items[choice] * quantity
-
-        # Fetch the fresh balance from DB
-        fresh_user = get_user(user[1])
-        if fresh_user[2] < total_cost + subtotal:
-            print("Insufficient funds for this item.")
-            continue
-
-        # Add to cart
-        if choice in cart:
-            cart[choice]['qty'] += quantity
-            cart[choice]['subtotal'] += subtotal
-        else:
-            cart[choice] = {"price": items[choice],
-                            "qty": quantity, "subtotal": subtotal}
-
-        total_cost += subtotal
-        print(f"Added {quantity} x {choice} to cart. Cart total: ₦{total_cost}")
-
-    if not cart:
-        print("No items purchased. Exiting shop.")
-        return
-
-    # Deduct total cost from DB
-    new_balance = fresh_user[2] - total_cost
-    update_balance(user[1], new_balance)
-
-    # Log each item as a transaction
-    for item_name, data in cart.items():
-        log_transaction(user[0], "debit", data['subtotal'],
-                        f"Purchased {data['qty']} x {item_name}")
-
-    print("\n----- RECEIPT -----")
+    from db_operations import connect, get_user, update_balance, log_transaction
     from datetime import datetime
     import random
+
+    connection = connect()
+    cursor = connection.cursor()
+
+    # Fetch items from database
+    cursor.execute("SELECT id, name, price, stock FROM items")
+    items = cursor.fetchall()
+
+    if not items:
+        print("No items available.")
+        connection.close()
+        return
+
+    print("\n---- AVAILABLE ITEMS ----")
+    for item in items:
+        print(f"{item[0]}. {item[1]} - ₦{item[2]} (Stock: {item[3]})")
+
+    try:
+        item_id = int(input("Enter item ID to purchase: "))
+        quantity = int(input("Enter quantity: "))
+    except ValueError:
+        print("Invalid input.")
+        connection.close()
+        return
+
+    # Find selected item
+    selected_item = next((item for item in items if item[0] == item_id), None)
+
+    if not selected_item:
+        print("Item not found.")
+        connection.close()
+        return
+
+    item_id, name, price, stock = selected_item
+
+    if quantity > stock:
+        print("Not enough stock available.")
+        connection.close()
+        return
+
+    total_cost = price * quantity
+
+    # Get fresh user balance
+    fresh_user = get_user(user[1])
+    current_balance = fresh_user[2]
+
+    if current_balance < total_cost:
+        print("Insufficient funds.")
+        connection.close()
+        return
+
+    # Atomic transaction
+    try:
+        # Begin transaction
+        cursor.execute("BEGIN")
+
+        # Deduct balance
+        new_balance = current_balance - total_cost
+        update_balance(user[1], new_balance)
+
+        # Reduce stock
+        new_stock = stock - quantity
+        cursor.execute("UPDATE items SET stock = ? WHERE id = ?", (new_stock, item_id))
+
+        
+
+        # Commit everything
+        connection.commit()
+
+    except Exception as e:
+        connection.rollback()
+        print(f"Transaction failed: {e}")
+        connection.close()
+        return
+
+    # Receipt
     timestamp = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
     trans_id = f"TXN-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{random.randint(1000, 9999)}"
+
+    # Log transaction
+    log_transaction(user[0], "debit", total_cost, f"Purchased {quantity} x {name}", trans_id)
+
+    print("\n----- RECEIPT -----")
     print(f"Date/Time: {timestamp}")
     print(f"Transaction ID: {trans_id}")
-    for item_name, data in cart.items():
-        print(f"{item_name.capitalize()} x{data['qty']} - ₦{data['subtotal']}")
-    print(f"TOTAL: ₦{total_cost}")
+    print(f"{name} x{quantity} - ₦{total_cost}")
     print(f"New Balance: ₦{new_balance}")
     print("------------------")
 
+    # Ledger
     with open("Transaction.txt 1.0", "a", encoding="utf-8") as ledger:
         ledger.write("\n----- NEW TRANSACTION -----\n")
         ledger.write(f"Username: {user[1]}\n")
         ledger.write(f"Transaction ID: {trans_id}\n")
         ledger.write(f"Date/Time: {timestamp}\n")
         ledger.write("------------------\n")
-
-        for item_name, data in cart.items():
-            ledger.write(f"{item_name} x{data['qty']} - ₦{data['subtotal']}\n")
-
+        ledger.write(f"{name} x{quantity} - ₦{total_cost}\n")
         ledger.write("------------------\n")
         ledger.write(f"TOTAL: ₦{total_cost}\n")
         ledger.write(f"New Balance: ₦{new_balance}\n")
         ledger.write("------------------\n")
+
+    connection.close()
+
 
 def view_balance(user):
     fresh_user = get_user(user[1])
     print(f"\nCurrent Balance: ₦{fresh_user[2]}")
 
 def view_transactions(user):
-    transactions = get_user_transactions(user[0])
 
-    if not transactions:
-        print("\nNo transactions found.")
-        return
+    connection = connect()
+    cursor = connection.cursor()
 
-    print("\n--- Transaction History ---")
-    for txn in transactions:
-        print(f"{txn[0].upper()} | ₦{txn[1]} | {txn[2]} | {txn[3]}")
+    cursor.execute("""
+    SELECT type, amount, timestamp, details, transaction_group
+    FROM transactions
+    WHERE user_id = ?
+    ORDER BY timestamp DESC
+    """, (user[0],))
 
+    records = cursor.fetchall()
+
+    if not records:
+        print("\nNo transactions yet.\n")
+    else:
+        print("\n--- Transaction History ---")
+
+    for t_type, amount, timestamp, details, group in records:
+        if group:
+         print(f"{timestamp} | {t_type.upper()} | ₦{amount} | {details} | TXN: {group}")
+        else:
+         print(f"{timestamp} | {t_type.upper()} | ₦{amount} | {details}")
+
+    connection.close()
 
 def menu(user):
     while True:
@@ -187,6 +250,8 @@ def menu(user):
 
         else:
             print("Invalid option. Try again.")
-while True:
-    current_user = login()
-    menu(current_user)
+
+
+login_user = login()
+menu(login_user)
+

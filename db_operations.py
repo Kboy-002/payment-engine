@@ -25,9 +25,38 @@ CREATE TABLE IF NOT EXISTS transactions (
     FOREIGN KEY(user_id) REFERENCES users(id)
 )
 """)
+  cursor.execute("""
+CREATE TABLE IF NOT EXISTS items(
+id INTEGER PRIMARY KEY AUTOINCREMENT,
+name TEXT UNIQUE NOT NULL,
+price REAL NOT NULL,
+stock INTEGER NOT NULL
+    )
+""")
+  try:
+    cursor.execute("""
+    ALTER TABLE transactions
+    ADD COLUMN transaction_group TEXT
+    """)
+  except:
+    pass
+  cursor.execute("SELECT COUNT(*) FROM items")
+  count = cursor.fetchone()[0]
+
+  if count == 0:
+      items = [
+          ("Rice", 5000, 50),
+          ("Beans", 3000, 40),
+          ("Garri", 1500, 100)
+      ]
+
+      cursor.executemany("""
+      INSERT INTO items (name, price, stock)
+      VALUES (?, ?, ?)
+      """, items)
+
   connection.commit()
   connection.close()
-  
 
 
 
@@ -90,17 +119,18 @@ def get_all_transactions():
   connection.close()
   return users
 
-from datetime import datetime
-def log_transaction(user_id, tx_type, amount, details=""):
+def log_transaction(user_id, tx_type, amount, details="", transaction_group=None):
+
     connection = connect()
     cursor = connection.cursor()
 
+    from datetime import datetime
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
     cursor.execute("""
-    INSERT INTO transactions (user_id, type, amount, timestamp, details)
-    VALUES (?, ?, ?, ?, ?)
-    """, (user_id, tx_type, amount, timestamp, details))
+    INSERT INTO transactions (user_id, type, amount, timestamp, details, transaction_group)
+    VALUES (?, ?, ?, ?, ?, ?)
+    """, (user_id, tx_type, amount, timestamp, details, transaction_group))
 
     connection.commit()
     connection.close()
