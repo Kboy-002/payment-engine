@@ -11,10 +11,10 @@ from db_operations import (
     get_user_transactions
 )
 initialise_db()
-
+from db_operations import view_inventory, add_item, update_item, delete_item, low_stock_alert, sales_report
 
 def login():
-    name = input("Enter your name: ")
+    name = input("Enter your name: ").lower()
 
     user = get_user(name)
 
@@ -52,7 +52,8 @@ def fund_account(user):
 
         # Update balance
         new_balance = current_balance + amount
-        cursor.execute("UPDATE users SET balance = ? WHERE id = ?", (new_balance, user[0]))
+        cursor.execute("UPDATE users SET balance = ? WHERE id = ?",
+                       (new_balance, user[0]))
 
         # Log transaction
         from datetime import datetime
@@ -75,19 +76,20 @@ def fund_account(user):
     finally:
         connection.close()
 
+
 def shop(user):
     """
-    Handles shopping, adding items to a cart, checking out,
-    updating user balance in DB, reducing stock, and logging transactions atomically.
+    Handles shopping using a cart system.
+    Users can add multiple items before checkout.
     """
-    from db_operations import connect, get_user, update_balance, log_transaction
+    from db_operations import connect, get_user
     from datetime import datetime
     import random
 
     connection = connect()
     cursor = connection.cursor()
 
-    # Fetch items from database
+    # Fetch items
     cursor.execute("SELECT id, name, price, stock FROM items")
     items = cursor.fetchall()
 
@@ -100,32 +102,68 @@ def shop(user):
     for item in items:
         print(f"{item[0]}. {item[1]} - ₦{item[2]} (Stock: {item[3]})")
 
-    try:
-        item_id = int(input("Enter item ID to purchase: "))
-        quantity = int(input("Enter quantity: "))
-    except ValueError:
-        print("Invalid input.")
+    # CART STORAGE
+    cart = {}
+
+    while True:
+        try:
+            item_id = int(input("\nEnter item ID to add to cart (0 to checkout): "))
+        except ValueError:
+            print("Invalid input.")
+            continue
+
+        if item_id == 0:
+            break
+
+        selected_item = next((item for item in items if item[0] == item_id), None)
+
+        if not selected_item:
+            print("Item not found.")
+            continue
+
+        item_id, name, price, stock = selected_item
+
+        try:
+            quantity = int(input("Enter quantity: "))
+        except ValueError:
+            print("Invalid quantity.")
+            continue
+
+        if quantity > stock:
+            print("Not enough stock available.")
+            continue
+
+        # ADD TO CART
+        if item_id in cart:
+            cart[item_id]["qty"] += quantity
+        else:
+            cart[item_id] = {
+                "name": name,
+                "price": price,
+                "qty": quantity,
+                "stock": stock
+            }
+
+        print(f"{quantity} x {name} added to cart.")
+
+        # DISPLAY CART
+        print("\n---- CURRENT CART ----")
+        total = 0
+        for item in cart.values():
+            item_total = item["price"] * item["qty"]
+            total += item_total
+            print(f"{item['name']} x{item['qty']} = ₦{item_total}")
+        print(f"Cart Total: ₦{total}")
+
+    if not cart:
+        print("Cart is empty.")
         connection.close()
         return
 
-    # Find selected item
-    selected_item = next((item for item in items if item[0] == item_id), None)
+    # CALCULATE TOTAL
+    total_cost = sum(item["price"] * item["qty"] for item in cart.values())
 
-    if not selected_item:
-        print("Item not found.")
-        connection.close()
-        return
-
-    item_id, name, price, stock = selected_item
-
-    if quantity > stock:
-        print("Not enough stock available.")
-        connection.close()
-        return
-
-    total_cost = price * quantity
-
-    # Get fresh user balance
+    # GET FRESH USER BALANCE
     fresh_user = get_user(user[1])
     current_balance = fresh_user[2]
 
@@ -134,22 +172,35 @@ def shop(user):
         connection.close()
         return
 
-    # Atomic transaction
+    # ATOMIC TRANSACTION
     try:
-        # Begin transaction
         cursor.execute("BEGIN")
 
-        # Deduct balance
+        # Deduct user balance
         new_balance = current_balance - total_cost
-        update_balance(user[1], new_balance)
+        cursor.execute("UPDATE users SET balance = ? WHERE id = ?", (new_balance, user[0]))
 
-        # Reduce stock
-        new_stock = stock - quantity
-        cursor.execute("UPDATE items SET stock = ? WHERE id = ?", (new_stock, item_id))
+        # GENERATE TRANSACTION ID
+        trans_id = f"TXN-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{random.randint(1000, 9999)}"
 
-        
+        # PROCESS CART ITEMS
+        for item_id, item in cart.items():
+            new_stock = item["stock"] - item["qty"]
+            cursor.execute("UPDATE items SET stock = ? WHERE id = ?", (new_stock, item_id))
 
-        # Commit everything
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            cursor.execute("""
+                INSERT INTO transactions (user_id, type, amount, timestamp, details, transaction_group)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (
+                user[0],
+                "debit",
+                item["price"] * item["qty"],
+                timestamp,
+                f"Purchased {item['qty']} x {item['name']}",
+                trans_id
+            ))
+
         connection.commit()
 
     except Exception as e:
@@ -158,39 +209,38 @@ def shop(user):
         connection.close()
         return
 
-    # Receipt
+    # RECEIPT
     timestamp = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
-    trans_id = f"TXN-{datetime.now().strftime('%Y%m%d-%H%M%S')}-{random.randint(1000, 9999)}"
-
-    # Log transaction
-    log_transaction(user[0], "debit", total_cost, f"Purchased {quantity} x {name}", trans_id)
-
     print("\n----- RECEIPT -----")
     print(f"Date/Time: {timestamp}")
     print(f"Transaction ID: {trans_id}")
-    print(f"{name} x{quantity} - ₦{total_cost}")
+    for item in cart.values():
+        print(f"{item['name']} x{item['qty']} - ₦{item['price'] * item['qty']}")
+    print("------------------")
+    print(f"TOTAL: ₦{total_cost}")
     print(f"New Balance: ₦{new_balance}")
     print("------------------")
 
-    # Ledger
+    # LEDGER
     with open("Transaction.txt 1.0", "a", encoding="utf-8") as ledger:
         ledger.write("\n----- NEW TRANSACTION -----\n")
         ledger.write(f"Username: {user[1]}\n")
         ledger.write(f"Transaction ID: {trans_id}\n")
         ledger.write(f"Date/Time: {timestamp}\n")
-        ledger.write("------------------\n")
-        ledger.write(f"{name} x{quantity} - ₦{total_cost}\n")
+        for item in cart.values():
+            ledger.write(f"{item['name']} x{item['qty']} - ₦{item['price'] * item['qty']}\n")
         ledger.write("------------------\n")
         ledger.write(f"TOTAL: ₦{total_cost}\n")
         ledger.write(f"New Balance: ₦{new_balance}\n")
         ledger.write("------------------\n")
 
-    connection.close()
+    connection.close()          
 
 
 def view_balance(user):
     fresh_user = get_user(user[1])
     print(f"\nCurrent Balance: ₦{fresh_user[2]}")
+
 
 def view_transactions(user):
 
@@ -213,11 +263,79 @@ def view_transactions(user):
 
     for t_type, amount, timestamp, details, group in records:
         if group:
-         print(f"{timestamp} | {t_type.upper()} | ₦{amount} | {details} | TXN: {group}")
+            print(
+                f"{timestamp} | {t_type.upper()} | ₦{amount} | {details} | TXN: {group}")
         else:
-         print(f"{timestamp} | {t_type.upper()} | ₦{amount} | {details}")
+            print(f"{timestamp} | {t_type.upper()} | ₦{amount} | {details}")
 
     connection.close()
+
+def inventory_menu():
+    while True:
+        print("\n---- INVENTORY MANAGEMENT ----")
+        print("1. View Inventory")
+        print("2. Add Item")
+        print("3. Update Item")
+        print("4. Delete Item")
+        print("5. Low Stock Alert")
+        print("6. Sales Report")
+        print("7. Back to Main Menu")
+
+        choice = input("Select an option: ")
+
+        if choice == "1":
+            view_inventory()
+
+        elif choice == "2":
+            name = input("Enter item name: ")
+
+            try:
+                price = float(input("Enter price: "))
+                stock = int(input("Enter stock quantity: "))
+            except ValueError:
+                print("Invalid input.")
+                continue
+
+            add_item(name, price, stock)
+
+        elif choice == "3":
+            try:
+                item_id = int(input("Enter item ID to update: "))
+            except ValueError:
+                print("Invalid ID.")
+                continue
+
+            name = input("Enter new name (leave blank to keep current): ")
+            price = input("Enter new price (leave blank to keep current): ")
+            stock = input("Enter new stock (leave blank to keep current): ")
+
+            name = name if name else None
+            price = float(price) if price else None
+            stock = int(stock) if stock else None
+
+            update_item(item_id, name, price, stock)
+
+        elif choice == "4":
+            try:
+                item_id = int(input("Enter item ID to delete: "))
+            except ValueError:
+                print("Invalid ID.")
+                continue
+
+            delete_item(item_id)
+
+        elif choice == "5":
+            low_stock_alert()
+
+        elif choice == "6":
+            sales_report()
+
+        elif choice == "6":
+            break
+
+        else:
+            print("Invalid option.")
+
 
 def menu(user):
     while True:
@@ -227,7 +345,8 @@ def menu(user):
         2. Shop
         3. View Balance
         4. View Transactions
-        5. Logout
+        5. Inventory Management
+        6. Logout
         """)
 
         choice = input("Select an option: ")
@@ -245,6 +364,9 @@ def menu(user):
             view_transactions(user)
 
         elif choice == "5":
+            inventory_menu()
+
+        elif choice == "6":
             print("Logging out...")
             break
 
@@ -254,4 +376,3 @@ def menu(user):
 
 login_user = login()
 menu(login_user)
-
