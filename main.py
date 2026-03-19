@@ -1,6 +1,6 @@
 from shop_logic import shop
 from inventory import view_inventory, add_item, update_item, delete_item, low_stock_alert
-from analytics import sales_report
+from analytics import display_sales_report, sales_report
 
 from db_operations import (
     initialise_db,
@@ -72,17 +72,19 @@ def fund_account(user):
 
             # LOG TRANSACTION
             timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-
+            branch_id = user[4]
             cursor.execute("""
             INSERT INTO transactions
-            (user_id, type, amount, timestamp, details)
-            VALUES (?, ?, ?, ?, ?)
+            (user_id, type, amount, item_name, quantity, timestamp, branch_id)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """, (
                 user[0],
                 "credit",
-                amount,
+                float(amount),
+                "Wallet Funding",
+                0,
                 timestamp,
-                "Account funding"
+                branch_id
             ))
 
         print(f"Funding successful. New balance: ₦{new_balance}")
@@ -98,7 +100,7 @@ def view_balance(user):
 
     fresh_user = get_user(user[1])
 
-    print(f"\nCurrent Balance: ₦{fresh_user[2]}")
+    print(f"\nCurrent Balance: ₦{fresh_user[2]:,.2f}")
 
 
 # VIEW TRANSACTIONS
@@ -107,7 +109,7 @@ def view_transactions(user):
     with db_connection() as cursor:
 
         cursor.execute("""
-        SELECT type, amount, timestamp, details, transaction_group
+        SELECT type, amount, item_name, quantity, timestamp
         FROM transactions
         WHERE user_id = ?
         ORDER BY timestamp DESC
@@ -121,20 +123,21 @@ def view_transactions(user):
 
     print("\n--- Transaction History ---")
 
-    for t_type, amount, timestamp, details, group in records:
+    for t_type, amount, item_name, quantity, timestamp in records:
 
-        if group:
+        if t_type == "debit":
             print(
-                f"{timestamp} | {t_type.upper()} | ₦{amount} | {details} | TXN: {group}"
+                f"{timestamp} | {t_type.upper()} | ₦{amount:,.2f} | {item_name} x{quantity}"
             )
 
         else:
             print(
-                f"{timestamp} | {t_type.upper()} | ₦{amount} | {details}"
+                f"{timestamp} | {t_type.upper()} | ₦{amount:,.2f} | {item_name}"
             )
 
-
 # INVENTORY MENU
+
+
 def inventory_menu():
 
     while True:
@@ -200,9 +203,12 @@ def inventory_menu():
             low_stock_alert()
 
         elif choice == "6":
-
-            sales_report()
-
+            branch_input = input("Enter branch ID (or ALL): ").strip()
+            if branch_input == "":
+                branch_input = None
+            from analytics import display_sales_report
+            display_sales_report(branch_input)
+            
         elif choice == "7":
 
             break
