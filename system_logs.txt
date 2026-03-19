@@ -1,3 +1,12 @@
 2026-03-12 21:15:08 | INFO | Purchase completed | TXN-20260312-211508-9033
 2026-03-12 21:16:39 | INFO | Purchase completed | TXN-20260312-211639-1300
 2026-03-12 21:17:11 | INFO | Purchase completed | TXN-20260312-211711-9859
+2026-03-17 10:01:20 | ERROR | Transaction failure | table transactions has no column named transaction_group
+2026-03-17 11:03:45 | INFO | Purchase completed | TXN-20260317-110345-4035
+2026-03-18 17:56:42 | ERROR | Transaction failure | table transactions has no column named details
+2026-03-18 18:05:12 | INFO | Purchase completed | TXN-20260318-180512-9101
+2026-03-18 18:23:23 | INFO | Purchase completed | TXN-20260318-182323-4180
+2026-03-18 18:26:06 | INFO | Purchase completed | TXN-20260318-182606-2265
+2026-03-18 20:22:55 | INFO | Purchase completed | TXN-20260318-202255-4393
+2026-03-18 20:40:59 | INFO | Purchase completed | TXN-20260318-204059-6112
+2026-03-18 20:55:11 | INFO | Purchase completed | TXN-20260318-205511-1290
