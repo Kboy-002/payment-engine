@@ -25,76 +25,118 @@ def db_connection():
 
 # INITIALISE DATABASE
 def initialise_db():
+    from db_operations import db_connection
 
     with db_connection() as cursor:
 
+        # -------------------- BRANCHES --------------------
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS branches (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT UNIQUE NOT NULL
+        )
+        """)
+        # Insert default branch (HQ)
+        cursor.execute("""
+        INSERT OR IGNORE INTO branches (id, name)
+        VALUES (1, 'HQ')
+        """)
+
+        # -------------------- USERS --------------------
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT UNIQUE NOT NULL,
-            balance REAL NOT NULL
+            balance REAL DEFAULT 0,
+            role TEXT DEFAULT 'customer',
+            branch_id INTEGER DEFAULT 1,
+            FOREIGN KEY (branch_id) REFERENCES branches(id)
         )
         """)
 
+        # -------------------- ITEMS --------------------
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS items (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            price REAL NOT NULL,
+            stock INTEGER NOT NULL,
+            branch_id INTEGER DEFAULT 1,
+            FOREIGN KEY (branch_id) REFERENCES branches(id)
+        )
+        """)
+
+        # -------------------- TRANSACTIONS --------------------
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS transactions (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            type TEXT NOT NULL,
-            amount REAL NOT NULL,
-            timestamp TEXT NOT NULL,
-            details TEXT,
-            transaction_group TEXT,
-            FOREIGN KEY(user_id) REFERENCES users(id)
+            user_id INTEGER,
+            type TEXT,
+            amount REAL,
+            item_name TEXT,
+            quantity INTEGER,
+            timestamp TEXT,
+            branch_id INTEGER DEFAULT 1,
+            FOREIGN KEY (user_id) REFERENCES users(id),
+            FOREIGN KEY (branch_id) REFERENCES branches(id)
         )
         """)
 
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS items(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            price REAL NOT NULL,
-            stock INTEGER NOT NULL
-        )
-        """)
-
+        # -------------------- RESTOCK LOGS --------------------
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS restock_logs (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             item_id INTEGER,
             item_name TEXT,
             quantity_added INTEGER,
-            timestamp TEXT
+            timestamp TEXT,
+            branch_id INTEGER DEFAULT 1,
+            FOREIGN KEY (branch_id) REFERENCES branches(id)
         )
         """)
 
-        # INSERT DEFAULT ITEMS
+        # -------------------- DEFAULT ITEMS --------------------
         cursor.execute("SELECT COUNT(*) FROM items")
         count = cursor.fetchone()[0]
 
         if count == 0:
-
             items = [
-                ("Rice", 5000, 50),
-                ("Beans", 3000, 40),
-                ("Garri", 1500, 100)
+                ("Rice", 5000, 50, 1),
+                ("Beans", 3000, 40, 1),
+                ("Garri", 1500, 100, 1)
             ]
-
             cursor.executemany("""
-            INSERT INTO items (name, price, stock)
-            VALUES (?, ?, ?)
+            INSERT INTO items (name, price, stock, branch_id)
+            VALUES (?, ?, ?, ?)
             """, items)
 
+        # -------------------- DEFAULT USERS --------------------
+        cursor.execute("SELECT COUNT(*) FROM users")
+        count_users = cursor.fetchone()[0]
+
+        if count_users == 0:
+            users = [
+                ("Admin", 0, "admin", 1),
+                ("TestUser", 100000, "customer", 1)
+            ]
+            cursor.executemany("""
+            INSERT INTO users (name, balance, role, branch_id)
+            VALUES (?, ?, ?, ?)
+            """, users)
+
+    print("Database initialized successfully.")
 
 # CREATE USER
-def create_user(name):
+
+
+def create_user(name, role="customer"):
 
     with db_connection() as cursor:
 
         cursor.execute("""
-        INSERT INTO users (name, balance)
-        VALUES (?, ?)
-        """, (name, 0.0))
+        INSERT INTO users (name, balance, role)
+        VALUES (?, ?, ?)
+        """, (name, 0.0, role))
 
 
 # GET USER
@@ -151,7 +193,7 @@ def get_all_transactions():
 
 
 # LOG TRANSACTION
-def log_transaction(user_id, tx_type, amount, details="", transaction_group=None):
+def log_transaction(user_id, tx_type, amount, details=""):
 
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 
@@ -159,9 +201,9 @@ def log_transaction(user_id, tx_type, amount, details="", transaction_group=None
 
         cursor.execute("""
         INSERT INTO transactions
-        (user_id, type, amount, timestamp, details, transaction_group)
-        VALUES (?, ?, ?, ?, ?, ?)
-        """, (user_id, tx_type, amount, timestamp, details, transaction_group))
+        (user_id, type, amount, timestamp, details)
+        VALUES (?, ?, ?, ?, ?)
+        """, (user_id, tx_type, amount, timestamp, details))
 
 
 # GET USER TRANSACTIONS
