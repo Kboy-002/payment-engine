@@ -1,44 +1,73 @@
-from db_operations import  db_connection
-def sales_report():
+def sales_report(branch_id=None):
+
+    from db_operations import db_connection
+
     with db_connection() as cursor:
-      cursor.execute("""
-    SELECT details, amount
-    FROM transactions
-    WHERE type = 'debit'
-    """)
 
-      sales = cursor.fetchall()
+        query = """
+        SELECT item_name, quantity, amount
+        FROM transactions
+        WHERE type = 'debit'
+        """
 
-    if not sales:
-        print("\nNo sales data available.\n")
+        params = []
+
+        # ✅ SAFE FILTER HANDLING
+        if branch_id is not None:
+
+            # Convert to string first (for safety)
+            branch_str = str(branch_id).strip()
+
+            if branch_str.upper() != "ALL":
+                try:
+                    branch_int = int(branch_str)  # ✅ force integer
+                    query += " AND branch_id = ?"
+                    params.append(branch_int)
+                except ValueError:
+                    return {"message": "Invalid branch_id"}
+
+        cursor.execute(query, params)
+        rows = cursor.fetchall()
+
+        if not rows:
+            return {"message": "No sales data available"}
+
+        total_revenue = 0
+        total_items_sold = 0
+        product_sales = {}
+
+        for item_name, quantity, amount in rows:
+            total_revenue += amount
+            total_items_sold += quantity
+
+            if item_name in product_sales:
+                product_sales[item_name] += quantity
+            else:
+                product_sales[item_name] = quantity
+
+        top_item = max(product_sales, key=product_sales.get)
+        top_quantity = product_sales[top_item]
+
+        return {
+            "branch_id": branch_id if branch_id else "ALL",
+            "total_revenue": total_revenue,
+            "total_items_sold": total_items_sold,
+            "total_transactions": len(rows),
+            "top_selling_item": top_item,
+            "top_selling_quantity": top_quantity
+        }
+def display_sales_report(branch_id=None):
+
+    report = sales_report(branch_id)
+
+    if "message" in report:
+        print("\n" + report["message"] + "\n")
         return
 
-    sales_data = {}
-    total_revenue = 0
-
-    for details, amount in sales:
-
-        try:
-            parts = details.split(" x ")
-
-            quantity = int(parts[0].replace("Purchased ", ""))
-            item_name = parts[1]
-
-        except:
-            continue
-
-        if item_name not in sales_data:
-            sales_data[item_name] = 0
-
-        sales_data[item_name] += quantity
-        total_revenue += amount
-
-    print("\n------ SALES REPORT ------\n")
-
-    for item, qty in sales_data.items():
-        print(f"{item}")
-        print(f"Total Sold: {qty}\n")
-
-    print("--------------------------")
-    print(f"Total Revenue: ₦{total_revenue}")
-    print("--------------------------")
+    print("\n----- SALES REPORT -----")
+    print(f"Branch: {report['branch_id']}")
+    print(f"Total Revenue: ₦{report['total_revenue']:.2f}")
+    print(f"Total Items Sold: {report['total_items_sold']}")
+    print(f"Total Transactions: {report['total_transactions']}")
+    print(f"Top Selling Item: {report['top_selling_item']} ({report['top_selling_quantity']})")
+    print("-------------------------\n")
