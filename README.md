@@ -40,8 +40,6 @@ Account funding with validation rules
 
 Debit and credit handling
 
-Peer-to-peer transfer logic
-
 Cart system with quantity handling
 
 Checkout system
