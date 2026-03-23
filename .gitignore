@@ -1,4 +1,6 @@
-payment_engine.db
+database.db
+system_logs.txt
 Transaction.txt 1.0
 __pycache__/
+.env
 *.pyc

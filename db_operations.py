@@ -1,240 +1,224 @@
-import sqlite3
+import os
+import psycopg2
 from contextlib import contextmanager
 from datetime import datetime
+from auth import hash_password, verify_password
 
-DATABASE = "database.db"
+# Load environment variables (must be called before this file is imported)
+from dotenv import load_dotenv
+load_dotenv()
+
+DATABASE_URL = os.getenv("DATABASE_URL")
+if not DATABASE_URL:
+    raise ValueError("DATABASE_URL environment variable is not set")
 
 
 @contextmanager
 def db_connection():
-
-    connection = sqlite3.connect(DATABASE)
-    cursor = connection.cursor()
-
+    """Context manager for PostgreSQL connections with SSL required."""
+    # sslmode=require is necessary for Supabase
+    conn = psycopg2.connect(DATABASE_URL, sslmode='require')
     try:
-        yield cursor
-        connection.commit()
-
-    except Exception as e:
-        connection.rollback()
-        raise e
-
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
     finally:
-        connection.close()
+        conn.close()
 
 
-# INITIALISE DATABASE
 def initialise_db():
-    from db_operations import db_connection
+    """Create tables if they don't exist."""
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            # Branches table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS branches (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL
+                )
+            """)
+            # Insert default branch (HQ)
+            cur.execute("""
+                INSERT INTO branches (id, name)
+                VALUES (1, 'HQ')
+                ON CONFLICT (id) DO NOTHING
+            """)
 
-    with db_connection() as cursor:
+            # Users table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT UNIQUE NOT NULL,
+                    password_hash TEXT NOT NULL,
+                    balance REAL DEFAULT 0,
+                    role TEXT DEFAULT 'customer',
+                    branch_id INTEGER DEFAULT 1 REFERENCES branches(id)
+                )
+            """)
 
-        # -------------------- BRANCHES --------------------
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS branches (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL
-        )
-        """)
-        # Insert default branch (HQ)
-        cursor.execute("""
-        INSERT OR IGNORE INTO branches (id, name)
-        VALUES (1, 'HQ')
-        """)
+            # Items table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS items (
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    price REAL NOT NULL,
+                    stock INTEGER NOT NULL,
+                    branch_id INTEGER DEFAULT 1 REFERENCES branches(id)
+                )
+            """)
 
-        # -------------------- USERS --------------------
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT UNIQUE NOT NULL,
-            balance REAL DEFAULT 0,
-            role TEXT DEFAULT 'customer',
-            branch_id INTEGER DEFAULT 1,
-            FOREIGN KEY (branch_id) REFERENCES branches(id)
-        )
-        """)
+            # Transactions table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS transactions (
+                    id SERIAL PRIMARY KEY,
+                    user_id INTEGER REFERENCES users(id),
+                    type TEXT,
+                    amount REAL,
+                    item_name TEXT,
+                    quantity INTEGER,
+                    timestamp TEXT,
+                    branch_id INTEGER DEFAULT 1 REFERENCES branches(id)
+                )
+            """)
 
-        # -------------------- ITEMS --------------------
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS items (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            price REAL NOT NULL,
-            stock INTEGER NOT NULL,
-            branch_id INTEGER DEFAULT 1,
-            FOREIGN KEY (branch_id) REFERENCES branches(id)
-        )
-        """)
+            # Restock logs table
+            cur.execute("""
+                CREATE TABLE IF NOT EXISTS restock_logs (
+                    id SERIAL PRIMARY KEY,
+                    item_id INTEGER REFERENCES items(id),
+                    item_name TEXT,
+                    quantity_added INTEGER,
+                    timestamp TEXT,
+                    branch_id INTEGER DEFAULT 1 REFERENCES branches(id)
+                )
+            """)
 
-        # -------------------- TRANSACTIONS --------------------
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS transactions (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER,
-            type TEXT,
-            amount REAL,
-            item_name TEXT,
-            quantity INTEGER,
-            timestamp TEXT,
-            branch_id INTEGER DEFAULT 1,
-            FOREIGN KEY (user_id) REFERENCES users(id),
-            FOREIGN KEY (branch_id) REFERENCES branches(id)
-        )
-        """)
+            # Default items
+            cur.execute("SELECT COUNT(*) FROM items")
+            count = cur.fetchone()[0]
+            if count == 0:
+                items = [
+                    ("Rice", 5000, 50, 1),
+                    ("Beans", 3000, 40, 1),
+                    ("Garri", 1500, 100, 1),
+                ]
+                cur.executemany("""
+                    INSERT INTO items (name, price, stock, branch_id)
+                    VALUES (%s, %s, %s, %s)
+                """, items)
 
-        # -------------------- RESTOCK LOGS --------------------
-        cursor.execute("""
-        CREATE TABLE IF NOT EXISTS restock_logs (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            item_id INTEGER,
-            item_name TEXT,
-            quantity_added INTEGER,
-            timestamp TEXT,
-            branch_id INTEGER DEFAULT 1,
-            FOREIGN KEY (branch_id) REFERENCES branches(id)
-        )
-        """)
-
-        # -------------------- DEFAULT ITEMS --------------------
-        cursor.execute("SELECT COUNT(*) FROM items")
-        count = cursor.fetchone()[0]
-
-        if count == 0:
-            items = [
-                ("Rice", 5000, 50, 1),
-                ("Beans", 3000, 40, 1),
-                ("Garri", 1500, 100, 1)
-            ]
-            cursor.executemany("""
-            INSERT INTO items (name, price, stock, branch_id)
-            VALUES (?, ?, ?, ?)
-            """, items)
-
-        # -------------------- DEFAULT USERS --------------------
-        cursor.execute("SELECT COUNT(*) FROM users")
-        count_users = cursor.fetchone()[0]
-
-        if count_users == 0:
-            users = [
-                ("Admin", 0, "admin", 1),
-                ("TestUser", 100000, "customer", 1)
-            ]
-            cursor.executemany("""
-            INSERT INTO users (name, balance, role, branch_id)
-            VALUES (?, ?, ?, ?)
-            """, users)
+            # Default users
+            cur.execute("SELECT COUNT(*) FROM users")
+            count_users = cur.fetchone()[0]
+            if count_users == 0:
+                default_password_hash = hash_password("password")
+                users = [
+                    ("admin", default_password_hash, 0, "admin", 1),
+                    ("testuser", default_password_hash, 100000, "customer", 1),
+                ]
+                cur.executemany("""
+                    INSERT INTO users (name, password_hash, balance, role, branch_id)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, users)
 
     print("Database initialized successfully.")
 
-# CREATE USER
+
+def create_user(name, password, role="customer", branch_id=1):
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            hashed = hash_password(password)
+            cur.execute("""
+                INSERT INTO users (name, password_hash, balance, role, branch_id)
+                VALUES (%s, %s, %s, %s, %s)
+            """, (name, hashed, 0.0, role, branch_id))
 
 
-def create_user(name, role="customer"):
-
-    with db_connection() as cursor:
-
-        cursor.execute("""
-        INSERT INTO users (name, balance, role)
-        VALUES (?, ?, ?)
-        """, (name, 0.0, role))
-
-
-# GET USER
 def get_user(name):
-
-    with db_connection() as cursor:
-
-        cursor.execute("""
-        SELECT * FROM users WHERE name = ?
-        """, (name,))
-
-        return cursor.fetchone()
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE name = %s", (name,))
+            return cur.fetchone()
 
 
-# UPDATE BALANCE
+def get_user_by_name(name):
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users WHERE name = %s", (name,))
+            row = cur.fetchone()
+            if row:
+                return {
+                    'id': row[0],
+                    'name': row[1],
+                    'password_hash': row[2],
+                    'balance': row[3],
+                    'role': row[4],
+                    'branch_id': row[5],
+                }
+            return None
+
+
 def update_balance(name, amount):
-
-    with db_connection() as cursor:
-
-        cursor.execute("""
-        UPDATE users SET balance = ?
-        WHERE name = ?
-        """, (amount, name))
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET balance = %s WHERE name = %s", (amount, name))
 
 
-# DELETE ALL USERS
 def delete_user():
-
-    with db_connection() as cursor:
-
-        cursor.execute("DELETE FROM users")
-
-        print("All users deleted")
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM users")
+            print("All users deleted")
 
 
-# GET ALL USERS
 def get_all_users():
-
-    with db_connection() as cursor:
-
-        cursor.execute("SELECT * FROM users")
-
-        return cursor.fetchall()
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM users")
+            return cur.fetchall()
 
 
-# GET ALL TRANSACTIONS
 def get_all_transactions():
-
-    with db_connection() as cursor:
-
-        cursor.execute("SELECT * FROM transactions")
-
-        return cursor.fetchall()
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT * FROM transactions")
+            return cur.fetchall()
 
 
-# LOG TRANSACTION
-def log_transaction(user_id, tx_type, amount, details=""):
-
+def log_transaction(user_id, tx_type, amount, item_name="", quantity=0, branch_id=1):
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                INSERT INTO transactions
+                (user_id, type, amount, item_name, quantity, timestamp, branch_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (user_id, tx_type, amount, item_name, quantity, timestamp, branch_id))
 
-    with db_connection() as cursor:
 
-        cursor.execute("""
-        INSERT INTO transactions
-        (user_id, type, amount, timestamp, details)
-        VALUES (?, ?, ?, ?, ?)
-        """, (user_id, tx_type, amount, timestamp, details))
-
-
-# GET USER TRANSACTIONS
 def get_user_transactions(user_id):
-
-    with db_connection() as cursor:
-
-        cursor.execute("""
-        SELECT type, amount, timestamp, details
-        FROM transactions
-        WHERE user_id = ?
-        ORDER BY id DESC
-        """, (user_id,))
-
-        return cursor.fetchall()
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT type, amount, item_name, quantity, timestamp
+                FROM transactions
+                WHERE user_id = %s
+                ORDER BY id DESC
+            """, (user_id,))
+            return cur.fetchall()
 
 
-# VIEW RESTOCK HISTORY
 def view_restock_logs():
-
-    with db_connection() as cursor:
-
-        cursor.execute("""
-        SELECT item_name, quantity_added, timestamp
-        FROM restock_logs
-        ORDER BY timestamp DESC
-        """)
-
-        logs = cursor.fetchall()
-
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT item_name, quantity_added, timestamp
+                FROM restock_logs
+                ORDER BY timestamp DESC
+            """)
+            logs = cur.fetchall()
     print("\n--- RESTOCK HISTORY ---")
-
     for log in logs:
         print(f"{log[2]} | {log[0]} | +{log[1]} units")
